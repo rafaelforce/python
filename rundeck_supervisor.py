@@ -21,25 +21,24 @@ def get_secret(secret_name, region_name, key):
     )
 
     try:
+
         get_secret_value_response = client.get_secret_value(
             SecretId = secret_name
         )
+
     except ClientError as e:
-        if e.response['Error']['Code'] == 'DecryptionFailureException':
-            raise e
-        elif e.response['Error']['Code'] == 'InternalServiceErrorException':
-            raise e
-        elif e.response['Error']['Code'] == 'InvalidParameterException':
-            raise e
-        elif e.response['Error']['Code'] == 'InvalidRequestException':
-            raise e
-        elif e.response['Error']['Code'] == 'ResourceNotFoundException':
-            raise e
+
+        raise e
+
     else:
+
         if 'SecretString' in get_secret_value_response:
+
             secret = get_secret_value_response['SecretString']
             return json.loads(secret)[key]
+
         else:
+
             decoded_binary_secret = base64.b64decode(get_secret_value_response['SecretBinary'])
             return decoded_binary_secret
 
@@ -48,20 +47,34 @@ def upd_secret(secret_name, region_name, key, val):
 
     session = boto3.session.Session()
     try:
+
         client = session.client(
             service_name = 'secretsmanager',
             region_name = region_name
         )
+
     except Exception as error:
+
         print('\nLine number: %s\nAction: %s\nError: %s\n' % (inspect.stack()[0][2], inspect.stack()[0][3], error))
+        raise error
+
     else:
+
         try:
+
             response = client.update_secret(
                 SecretId = '%s' % (secret_name),
                 SecretString = '{"%s":"%s"}' % (key, val),
             )
+
         except Exception as error:
+
             print('\nLine number: %s\nAction: %s\nError: %s\n' % (inspect.stack()[0][2], inspect.stack()[0][3], error))
+            raise error
+
+        else:
+
+            return 0
 
 
 # Thanks Rommel for this code snippet - AlertManager API request
@@ -75,16 +88,16 @@ def report_status(module="", job="", status="", details="", severity="INFO", per
             'severity': severity
         },
         'annotations': {
-            'description': '%s' % (details),
+            'description': details,
             'summary': 'The %s/%s job finished with %s status.' % (module, job, status)
         },
         'GeneratorURL': permalink
     }]
 
-    url = 'https://xxxxx.xxxxxx.xxxx.xxxxx/api/v1/alerts'
+    url = 'https://alertmanager.greenmile.com/api/v1/alerts'
     body = json.dumps(message)
     body = body.encode()
-    print(body)
+    #print(body)
     req = urllib.request.Request(url, body)
     req.add_header('Content-Type', 'application/json')
 
@@ -98,7 +111,9 @@ def report_status(module="", job="", status="", details="", severity="INFO", per
         response = json.load(e)
 
         if 'description' in response:
+
             print(response['description'])
+
         raise e
 
 
@@ -111,45 +126,59 @@ class Session:
     utc = ''
 
     def __init__(self):
+
         self.utc = pytz.UTC
-        self.srv_addr = 'https://xxxxx.xxxxxxx.xxx.xx'
-        self.user = 'xxxxx'
-        self.key = 'xxxx_xxxx'
-        self.secret_name = 'xxxx_xxxx'
-        self.region = 'xx-xxxx-x'
+        self.srv_addr = 'https://rundeck.greenmile.com'
+        self.user = 'rundeck'
+        self.key = 'rundeck_token'
+        self.secret_name = 'rundeck_token'
+        self.region = 'us-east-1'
 
         try:
+
             self.token = get_secret(self.secret_name, self.region, self.key)
             self.headers = {
                 'Accept': 'application/json',
                 'X-Rundeck-Auth-Token': self.token,
             }
+
         except Exception as error:
+
             print('\nLine number: %s\nAction: %s\nError: %s\n' % (inspect.stack()[0][2], inspect.stack()[0][3], error))
+            raise error
+
         else:
+
             self.chk_token()
 
     def upd_token(self, key, val):
+
         return upd_secret(self.secret_name, self.region, key, val)
 
     def get_token(self):
+
         return self.token
 
     def chk_token(self):
+
         days_limit = 5
         call = 'api/21/tokens'
         response = requests.get('%s/%s/%s' % (self.srv_addr, call, self.user), headers=self.headers)
         dict = response.json()
 
         for index in dict:
+
             if ( (dateutil.parser.parse(index['expiration']) - self.utc.localize(datetime.now())).days >= days_limit ):
                 return 'valid'
+
             else:
+
                 self.token = self.add_token()
                 self.del_token(self.token, index['id'])
                 return 'updated'
 
     def add_token(self):
+
         call = 'api/21/tokens'
         body = {
             'Accept': 'application/json',
@@ -165,6 +194,7 @@ class Session:
         return dict['token']
 
     def del_token(self, new_token, last_token_id):
+
         call = 'api/21/token'
         body = {
             'Accept': 'application/json',
@@ -176,7 +206,8 @@ class Session:
         return response
 
     def chk_job(self):
-        days_limit = 1
+
+        days_limit = 2
         call = 'api/21/projects'
         body = {
             'Accept': 'application/json',
@@ -184,34 +215,40 @@ class Session:
             'Content-Type': 'application/json',
         }
 
-        response = requests.get('%s/%s' % (self.srv_addr, call), headers=body)
+        response = requests.get('%s/%s' % (self.srv_addr, call), headers=body, timeout=120)
         dict = response.json()
 
         for project in dict:
+
             job_dict = self.get_job(project['name'])
+
             for job in job_dict:
+
                 exec_list = self.get_job_info(job['id'])
-                if ( exec_list['executions'][0]['status'] != 'succeeded'
+
+                first_execution = exec_list['executions'][0]
+                if ( first_execution['status'] != 'succeeded'
                         and ((self.utc.localize(datetime.now()) -
-                              dateutil.parser.parse(exec_list['executions'][0]['date-started']['date'])).days < days_limit) ):
+                              dateutil.parser.parse(first_execution['date-started']['date'])).days < days_limit)):
 
-                    # For historical purposes
-                    print('Project: %s -> Job: %s -> Execution date: %s -> Status: %s -> Link: %s, Executed by: %s, '
-                          'Duration: %s' %
-                          (project['name'], job['name'], exec_list['executions'][0]['date-started']['date'],
-                           exec_list['executions'][0]['status'], exec_list['executions'][0]['permalink'],
-                           exec_list['executions'][0]['user'], exec_list['executions'][0]['job']['averageDuration']))
+                    details = "Failed after %ss at %s UTC started at %s UTC by %s" % \
+                              (first_execution['job']['averageDuration'] / 1000.0,
+                               (dateutil.parser.parse(first_execution['date-ended']['date'])).strftime("%a %H:%M %p"),
+                               (dateutil.parser.parse(first_execution['date-started']['date'])).strftime("%a %H:%M %p"),
+                               first_execution['user'])
+                    try:
 
-                    details = "Failed after %ss at %s started at %s by %s" % \
-                              (exec_list['executions'][0]['job']['averageDuration']/1000.0,
-                               (dateutil.parser.parse(exec_list['executions'][0]['date-ended']['date'])).strftime("%a %H:%M %p"),
-                               (dateutil.parser.parse(exec_list['executions'][0]['date-started']['date'])).strftime("%a %H:%M %p"),
-                               exec_list['executions'][0]['user'])
+                        report_status(project['name'], job['name'], first_execution['status'], details,
+                                  "INFO", first_execution['permalink'])
 
-                    report_status(project['name'], job['name'], exec_list['executions'][0]['status'], details,
-                                  "INFO", exec_list['executions'][0]['permalink'])
+                    except Exception as error:
+
+                        print('\nLine number: %s\nAction: %s\nError: %s\n' % (inspect.stack()[0][2],
+                                                                              inspect.stack()[0][3], error))
+                        raise error
 
     def get_job(self, project):
+
         call = 'api/21/project/%s/jobs' % (project)
         body = {
             'Accept': 'application/json',
@@ -224,6 +261,7 @@ class Session:
         return response.json()
 
     def get_job_info(self, job_id):
+
         call = 'api/21/job/%s/executions' % (job_id)
         body = {
             'Accept': 'application/json',
@@ -235,6 +273,26 @@ class Session:
         return response.json()
 
 
-rundeck = Session()
+try:
 
-rundeck.chk_job()
+    rundeck = Session()
+
+except Exception as error:
+
+    print('\nLine number: %s\nAction: %s\nError: %s\n' % (inspect.stack()[0][2], inspect.stack()[0][3], error))
+    exit(1)
+
+else:
+
+    try:
+
+        rundeck.chk_job()
+
+    except Exception as error:
+
+        print('\nLine number: %s\nAction: %s\nError: %s\n' % (inspect.stack()[0][2], inspect.stack()[0][3], error))
+        exit(1)
+
+    else:
+
+        exit(0)
