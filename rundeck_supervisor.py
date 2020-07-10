@@ -77,7 +77,6 @@ def upd_secret(secret_name, region_name, key, val):
             return 0
 
 
-# Thanks Rommel for this code snippet - AlertManager API request
 def report_status(module="", job="", status="", details="", severity="INFO", permalink=""):
 
     message = [{
@@ -94,7 +93,7 @@ def report_status(module="", job="", status="", details="", severity="INFO", per
         'GeneratorURL': permalink
     }]
 
-    url = 'https://alertmanager.greenmile.com/api/v1/alerts'
+    url = 'https://alertmanager.x.com/api/v1/alerts'
     body = json.dumps(message)
     body = body.encode()
     #print(body)
@@ -128,10 +127,10 @@ class Session:
     def __init__(self):
 
         self.utc = pytz.UTC
-        self.srv_addr = 'https://rundeck.greenmile.com'
+        self.srv_addr = 'https://rundeck.x.com'
         self.user = 'rundeck'
-        self.key = 'rundeck_token'
-        self.secret_name = 'rundeck_token'
+        self.key = 'x_token'
+        self.secret_name = 'x_token'
         self.region = 'us-east-1'
 
         try:
@@ -161,14 +160,14 @@ class Session:
 
     def chk_token(self):
 
-        days_limit = 5
+        limit_days = 2
         call = 'api/21/tokens'
         response = requests.get('%s/%s/%s' % (self.srv_addr, call, self.user), headers=self.headers)
         dict = response.json()
 
         for index in dict:
 
-            if ( (dateutil.parser.parse(index['expiration']) - self.utc.localize(datetime.now())).days >= days_limit ):
+            if ((dateutil.parser.parse(index['expiration']) - self.utc.localize(datetime.now())).days >= limit_days):
                 return 'valid'
 
             else:
@@ -207,7 +206,7 @@ class Session:
 
     def chk_job(self):
 
-        days_limit = 2
+        limit_days = '1d'
         call = 'api/21/projects'
         body = {
             'Accept': 'application/json',
@@ -215,54 +214,37 @@ class Session:
             'Content-Type': 'application/json',
         }
 
-        response = requests.get('%s/%s' % (self.srv_addr, call), headers=body, timeout=120)
+        response = requests.get('%s/%s' % (self.srv_addr, call), headers=body)
         dict = response.json()
 
         for project in dict:
 
-            job_dict = self.get_job(project['name'])
+            job_history = self.get_job_history(project['name'], limit_days)
 
-            for job in job_dict:
+            if job_history['paging']['count'] != 0:
 
-                exec_list = self.get_job_info(job['id'])
+                events = job_history['events'][0]
 
-                first_execution = exec_list['executions'][0]
-                if ( first_execution['status'] != 'succeeded'
-                        and ((self.utc.localize(datetime.now()) -
-                              dateutil.parser.parse(first_execution['date-started']['date'])).days < days_limit)):
+                details = "Failed after %ss at %s started at %s by %s" % \
+                    ((dateutil.parser.parse(events['date-ended'])-dateutil.parser.parse(events['date-started'])).seconds,
+                      dateutil.parser.parse(events['date-started']).strftime("%a %H:%M %p"),
+                      dateutil.parser.parse(events['date-started']).strftime("%a %H:%M %p"),
+                      events['user'])
 
-                    details = "Failed after %ss at %s UTC started at %s UTC by %s" % \
-                              (first_execution['job']['averageDuration'] / 1000.0,
-                               (dateutil.parser.parse(first_execution['date-ended']['date'])).strftime("%a %H:%M %p"),
-                               (dateutil.parser.parse(first_execution['date-started']['date'])).strftime("%a %H:%M %p"),
-                               first_execution['user'])
-                    try:
+                try:
 
-                        report_status(project['name'], job['name'], first_execution['status'], details,
-                                  "INFO", first_execution['permalink'])
+                    report_status(events['project'], events['title'], events['status'], details,
+                                  "INFO", events['execution']['permalink'])
 
-                    except Exception as error:
+                except Exception as error:
 
-                        print('\nLine number: %s\nAction: %s\nError: %s\n' % (inspect.stack()[0][2],
-                                                                              inspect.stack()[0][3], error))
-                        raise error
+                    print('\nLine number: %s\nAction: %s\nError: %s\n' % (inspect.stack()[0][2],
+                                                                          inspect.stack()[0][3], error))
+                    raise error
 
-    def get_job(self, project):
+    def get_job_history(self, project_name, limit_days):
 
-        call = 'api/21/project/%s/jobs' % (project)
-        body = {
-            'Accept': 'application/json',
-            'X-Rundeck-Auth-Token': self.token,
-            'Content-Type': 'application/json',
-        }
-        data = '{\n  "scheduleEnabled": "true",\n  "enabled": "true"\n}'
-
-        response = requests.get('%s/%s' % (self.srv_addr, call), headers=body, data=data)
-        return response.json()
-
-    def get_job_info(self, job_id):
-
-        call = 'api/21/job/%s/executions' % (job_id)
+        call = 'api/21/project/%s/history?recentFilter=%s&statFilter=fail' % (project_name, limit_days)
         body = {
             'Accept': 'application/json',
             'X-Rundeck-Auth-Token': self.token,
